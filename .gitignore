@@ -3,3 +3,5 @@
 .RData
 .Ruserdata
 renv/library/
+.vscode/
+.python-version
