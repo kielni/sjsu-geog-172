@@ -5,3 +5,7 @@
 renv/library/
 .vscode/
 .python-version
+slides
+.DS_Store
+rosm.cache/
+output/
