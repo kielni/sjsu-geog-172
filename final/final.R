@@ -10,11 +10,8 @@ library(tigris)
 
 options(tigris_use_cache = TRUE)
 
-# TODO: update comment style, add params
 # TODO: add path, create if not exists
 # TODO: update title to include metro
-# TODO: add line to legend
-# TODO: scale
 # TODO: color transparency
 
 # Commute times in the Bay Area, 2000 vs 2019 ----------------------------
@@ -66,6 +63,8 @@ clip_to_metro <- function(commute, metro) {
 prep_data <- function(commute, metro) {
   #' Prepare commute data with common steps for all years.
   #' Coerce to numeric, filter NA, transform to Web Mercator.
+  #' Clip to metro area.
+  #' Create commute time categories.
   #' @param commute sf data frame with mean_travel_time column
   #' @param metro sf data frame with metro boundary, in Web Mercator
   #' @return cleaned sf data frame, in Web Mercator
@@ -77,7 +76,31 @@ prep_data <- function(commute, metro) {
     # convert to web mercator for mapping
     st_transform(3857)
 
-  clip_to_metro(commute, metro)
+  commute <- clip_to_metro(commute, metro)
+
+  # create commute time categories
+  # from values in ACS variable B08303:
+  # (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 60, 90, Inf)
+  # from data
+  #  Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+  # 10.00   26.78   30.11   30.09   33.45   57.90
+  breaks <- c(0, 25, 30, 35, 45, 60)
+  labels <- c(
+    "Less than 25 minutes",
+    "25 to 29 minutes",
+    "30 to 34 minutes",
+    "35 to 44 minutes",
+    "45 minutes or more"
+  )
+  commute <- commute |>
+    mutate(
+      commute_category = cut(
+        mean_travel_time,
+        breaks = breaks,
+        labels = labels,
+        right = FALSE
+      )
+    )
 }
 
 get_limits <- function(sf_object) {
@@ -106,6 +129,7 @@ plot_data <- function(commute_data, common_scale, metro, year,
   #' @param draw_north logical whether to draw north arrow
   #' @param draw_scale logical whether to draw scale bar
   #' @return ggplot object
+
   print(paste("plotting year", year))
   plt <- ggplot() +
     # base map
@@ -113,15 +137,13 @@ plot_data <- function(commute_data, common_scale, metro, year,
     # commute data
     geom_sf(
       data = commute_data,
-      aes(fill = .data$mean_travel_time),
-      color = NA
+      aes(fill = commute_category)
     ) +
-    # scale_fill_viridis_c(limits = common_scale) +
-    # TODO: discrete scale with set number of bins
-    scale_fill_distiller(
-      palette = "YlGnBu",
-      direction = 1,
-      limits = common_scale
+    scale_fill_brewer(
+      # palette = "YlGnBu",
+      palette = "RdYlGn",
+      direction = -1,
+      na.value = "transparent",
     ) +
     labs(fill = "Mean Commute Time\n(minutes)")
   # draw year label in top right corner
@@ -302,7 +324,10 @@ combine_plots <- function(plot_prev, plot_latest) {
   # overall title
   title <- ggdraw() +
     draw_label(
-      "Mean Commute Times in the San Francisco Bay Area: 2000 vs 2019",
+      paste(
+        "Mean Commute Times in the San Francisco - San Jose Urban Area\n",
+        "2000 vs 2019"
+      ),
       fontface = "bold",
       x = 0.5,
       hjust = 0.5
@@ -334,7 +359,7 @@ combine_plots <- function(plot_prev, plot_latest) {
   final_map
 }
 
-# Setup ----------------------------
+# Script  ----------------------------
 bay_counties <- c(
   "Alameda", "Contra Costa", "Marin", "Napa", "San Francisco",
   "San Mateo", "Santa Clara", "Solano", "Sonoma"
@@ -343,8 +368,8 @@ year_latest <- 2019
 year_prev <- 2000
 
 # metro <- prep_metro()
-# mean_commute_latest <- load_acs(counties, metro, year_latest)
-# mean_commute_prev <- load_decennial(counties, metro, year_prev)
+mean_commute_latest <- load_acs(counties, metro, year_latest)
+mean_commute_prev <- load_decennial(counties, metro, year_prev)
 
 # common scale so colors will have the same meaning on both plots
 common_scale <- range(
