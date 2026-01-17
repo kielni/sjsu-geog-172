@@ -1,10 +1,8 @@
-library(censusapi)
 library(cowplot)
 library(dplyr)
 library(ggspatial)
 library(ggplot2)
 library(sf)
-library(tidyr)
 library(tidycensus)
 library(tidygeocoder)
 library(tigris)
@@ -17,7 +15,8 @@ print(paste("writing output to", output_path))
 
 # Commute times in the Bay Area, 2000 vs 2019 ----------------------------
 # Data sources
-#   - 2019 ACS: B08303	Travel Time To Work
+#   - 2019 ACS: S0801_C01_046 Workers 16 years and over who did not work from
+#     home: TRAVEL TIME TO WORK: Mean travel time to work (minutes)
 #   - 2000 Decennial Census: P031 Travel time to work for workers
 #       16 years & over
 #   - 2019 urban area boundaries (`tigris::urban_areas()`)
