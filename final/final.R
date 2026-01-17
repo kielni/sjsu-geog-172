@@ -108,7 +108,9 @@ plot_data <- function(commute_data, common_scale, metro, year,
   #' @return ggplot object
   print(paste("plotting year", year))
   plt <- ggplot() +
+    # base map
     annotation_map_tile(type = "cartolight", zoom = 11) +
+    # commute data
     geom_sf(
       data = commute_data,
       aes(fill = .data$mean_travel_time),
@@ -149,20 +151,30 @@ plot_data <- function(commute_data, common_scale, metro, year,
   }
 
   # draw metro boundary
-  line_label <- "2019 Urban Area Boundary"
   plt <- plt +
     geom_sf(
       data = metro,
+      aes(color = "2019 Urban\nArea Boundary"),
       fill = NA,
-      color = "black",
       size = 0.5
+    ) +
+    scale_color_manual(
+      values = c("2019 Urban\nArea Boundary" = "black"),
+      name = NULL
+    ) +
+    guides(
+      fill = guide_legend(order = 1),
+      color = guide_legend(order = 2)
     )
-    
 
   # set limits to metro area with some padding
   limits <- get_limits(metro)
   plt <- plt + coord_sf(xlim = limits$xlim, ylim = limits$ylim) +
-    theme_void()
+    theme_void() +
+    theme(
+      legend.margin = margin(b = 10),
+      legend.spacing.y = unit(15, "pt")
+    )
 
   # write to file for debugging
   filename <- paste0("commute_", year, ".png")
@@ -274,26 +286,9 @@ combine_plots <- function(plot_prev, plot_latest) {
   )
 
   # single shared legend
-  fill_legend <- get_legend(
+  legend <- get_legend(
     plot_prev + theme(legend.box.margin = margin(0, 0, 0, 1))
   )
-  # urban area boundary line legend
-  # line_legend <- get_legend(
-  #   plot_prev +
-  #     guides(fill = "none") +
-  #     theme(
-  #      legend.position = "right",
-  #       legend.box.margin = margin(0, 0, 0, 1)
-  #     )
-  # )
-  # legend <- plot_grid(
-  #   fill_legend,
-  #   line_legend,
-  #   ncol = 1,
-  #   rel_heights = c(0.6, 0.4)
-  # )
-  legend <- fill_legend
-  # !!!
 
   # attribution in bottom right
   attribution <- ggdraw() +
@@ -348,7 +343,6 @@ year_latest <- 2019
 year_prev <- 2000
 
 # metro <- prep_metro()
-
 # mean_commute_latest <- load_acs(counties, metro, year_latest)
 # mean_commute_prev <- load_decennial(counties, metro, year_prev)
 
