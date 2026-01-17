@@ -16,7 +16,6 @@ options(tigris_use_cache = TRUE)
 # TODO: add line to legend
 # TODO: scale
 # TODO: color transparency
-# TODO: legend label
 
 # Commute times in the Bay Area, 2000 vs 2019 ----------------------------
 # Data sources
@@ -51,7 +50,7 @@ clip_to_metro <- function(commute, metro) {
     scale_fill_viridis_c()
   ggsave("metro_overlap_percent.png", path = "final")
 
-  # 1% is 2% overlap, 5% is 38%
+  # 1st percentile is 2% overlap, 5th is 38%
   # keep tracts that overlap at least 2.5% of their area
   min_overlap <- 0.025
   commute <- commute |>
@@ -81,38 +80,57 @@ prep_data <- function(commute, metro) {
   clip_to_metro(commute, metro)
 }
 
+get_limits <- function(sf_object) {
+  #' Get bounding box of sf object as named vector
+  #' @param sf_object sf data frame
+  #' @return named vector with xlim and ylim
+  bbox <- st_bbox(sf_object)
+  x_range <- bbox["xmax"] - bbox["xmin"]
+  y_range <- bbox["ymax"] - bbox["ymin"]
+  bbox["xmin"] <- bbox["xmin"] - 0.05 * x_range
+  bbox["xmax"] <- bbox["xmax"] + 0.05 * x_range
+  bbox["ymin"] <- bbox["ymin"] - 0.05 * y_range
+  bbox["ymax"] <- bbox["ymax"] + 0.05 * y_range
+  xlim <- c(bbox["xmin"], bbox["xmax"])
+  ylim <- c(bbox["ymin"], bbox["ymax"])
+  list(xlim = xlim, ylim = ylim)
+}
+
 plot_data <- function(commute_data, common_scale, metro, year,
                       draw_north = FALSE, draw_scale = FALSE) {
-  # create ggplot object for commute data
+  #' Create a map for commute data
+  #' @param commute_data sf data frame with mean_travel_time column
+  #' @param common_scale numeric vector with min, max values for color scale
+  #' @param metro sf data frame with metro boundary, in Web Mercator
+  #' @param year integer year for labeling
+  #' @param draw_north logical whether to draw north arrow
+  #' @param draw_scale logical whether to draw scale bar
+  #' @return ggplot object
   print(paste("plotting year", year))
   plt <- ggplot() +
-    annotation_map_tile(type = "cartolight") +
+    annotation_map_tile(type = "cartolight", zoom = 11) +
     geom_sf(
       data = commute_data,
       aes(fill = .data$mean_travel_time),
       color = NA
     ) +
     # scale_fill_viridis_c(limits = common_scale) +
+    # TODO: discrete scale with set number of bins
     scale_fill_distiller(
       palette = "YlGnBu",
       direction = 1,
       limits = common_scale
-    )
-    labs(fill = "Mean Commute Time\n(minutes)") +
-    theme(
-      # remove left and right margins
-      # from cowplot shared legend
-      plot.margin = margin(6, 0, 6, 0),
-    )
-  # draw year label in top left corner
+    ) +
+    labs(fill = "Mean Commute Time\n(minutes)")
+  # draw year label in top right corner
   plt <- plt +
     annotate(
       "text",
-      x = -Inf,
+      x = Inf,
       y = Inf,
       label = year,
-      hjust = 0,
-      vjust = 1,
+      hjust = 1.2,
+      vjust = 1.2,
       size = 4,
       fontface = "bold",
       color = "black"
@@ -127,13 +145,11 @@ plot_data <- function(commute_data, common_scale, metro, year,
       )
   }
   if (draw_scale) {
-    plt <- plt +
-      annotation_scale(
-        location = "br",
-        height = unit(0.2, "cm"),
-      )
+    plt <- plt + annotation_scale(location = "br", height = unit(0.2, "cm"))
   }
+
   # draw metro boundary
+  line_label <- "2019 Urban Area Boundary"
   plt <- plt +
     geom_sf(
       data = metro,
@@ -141,7 +157,12 @@ plot_data <- function(commute_data, common_scale, metro, year,
       color = "black",
       size = 0.5
     )
-  plt <- plt + theme_void()
+    
+
+  # set limits to metro area with some padding
+  limits <- get_limits(metro)
+  plt <- plt + coord_sf(xlim = limits$xlim, ylim = limits$ylim) +
+    theme_void()
 
   # write to file for debugging
   filename <- paste0("commute_", year, ".png")
@@ -165,6 +186,10 @@ load_acs <- function(counties, metro, year) {
   #'   Workers 16 years and over who did not work from home!!
   #'   TRAVEL TIME TO WORK!!
   # '  Mean travel time to work (minutes)
+  #' @param counties vector of county names
+  #' @param metro sf data frame with metro boundary, in Web Mercator
+  #' @param year integer year for ACS data
+  #' @return sf data frame with mean_travel_time column
   commute_latest <- get_acs(
     geography = "tract",
     state = "CA",
@@ -191,6 +216,10 @@ load_decennial <- function(counties, metro, year) {
   #' P031002 =
   #'   Total!!Did not work at home
   #'   TRAVEL TIME TO WORK FOR WORKERS 16 YEARS AND OVER
+  #' @param counties vector of county names
+  #' @param metro sf data frame with metro boundary, in Web Mercator
+  #' @param year integer year for decennial data
+  #' @return sf data frame with mean_travel_time column
   commute_prev <- get_decennial(
     geography = "tract",
     state = "CA",
@@ -206,17 +235,15 @@ load_decennial <- function(counties, metro, year) {
     output = "wide"
   ) |>
     # calculate mean travel time
-    mutate(
-      mean_travel_time = total_time / total_workers
-    )
+    mutate(mean_travel_time = total_time / total_workers)
 
   prep_data(commute_prev, metro)
 }
 
 prep_metro <- function() {
-  #' Load 2019 core based statistical area boundaries for
-  #' San Francisco - San Jose corridor.
+  #' Load 2019 urban area boundaries for San Francisco and San Jose.
   #' This data is not currently available for years prior to 2011.
+  #' @return sf data frame with metro boundary, in Web Mercator
   ua <- urban_areas(year = 2019, cb = TRUE) |>
     filter(grepl(", CA", NAME10))
 
@@ -231,18 +258,42 @@ prep_metro <- function() {
 }
 
 combine_plots <- function(plot_prev, plot_latest) {
-  #' Create single map from two plots.
+  #' Create single map from two plots, with shared legend, title, attribution
+  #' @param plot_prev ggplot object for previous year
+  #' @param plot_latest ggplot object for latest year
+  #' @return ggplot object
+
+  # add side by side plots
   plots <- plot_grid(
-    plot_prev + theme(legend.position = "none"),
-    plot_latest + theme(legend.position = "none"),
+    plot_prev +
+      theme(legend.position = "none", plot.margin = margin(0, 6, 0, 0)),
+    plot_latest +
+      theme(legend.position = "none", plot.margin = margin(0, 0, 0, 6)),
     align = "vh",
     nrow = 1
   )
 
   # single shared legend
-  legend <- get_legend(
-    plot_prev + theme(legend.box.margin = margin(0, 0, 0, 12))
+  fill_legend <- get_legend(
+    plot_prev + theme(legend.box.margin = margin(0, 0, 0, 1))
   )
+  # urban area boundary line legend
+  # line_legend <- get_legend(
+  #   plot_prev +
+  #     guides(fill = "none") +
+  #     theme(
+  #      legend.position = "right",
+  #       legend.box.margin = margin(0, 0, 0, 1)
+  #     )
+  # )
+  # legend <- plot_grid(
+  #   fill_legend,
+  #   line_legend,
+  #   ncol = 1,
+  #   rel_heights = c(0.6, 0.4)
+  # )
+  legend <- fill_legend
+  # !!!
 
   # attribution in bottom right
   attribution <- ggdraw() +
@@ -267,7 +318,7 @@ combine_plots <- function(plot_prev, plot_latest) {
 
   # arrange elements
   # add legend to the right of the plots
-  plots_with_legend <- plot_grid(plots, legend, rel_widths = c(2, .4))
+  plots_with_legend <- plot_grid(plots, legend, rel_widths = c(0.85, 0.15))
   final_map <- plot_grid(
     title, plots_with_legend, attribution,
     ncol = 1,
@@ -283,8 +334,9 @@ combine_plots <- function(plot_prev, plot_latest) {
     path = "final",
     plot = final_map,
     width = 12,
-    height = 6
+    height = 9
   )
+  final_map
 }
 
 # Setup ----------------------------
