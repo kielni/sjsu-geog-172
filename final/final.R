@@ -6,23 +6,26 @@ library(ggplot2)
 library(sf)
 library(tidyr)
 library(tidycensus)
+library(tidygeocoder)
 library(tigris)
 
 options(tigris_use_cache = TRUE)
 
-# TODO: add path, create if not exists
-# TODO: update title to include metro
-# TODO: color transparency
+output_path <- "output"
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+print(paste("writing output to", output_path))
 
 # Commute times in the Bay Area, 2000 vs 2019 ----------------------------
 # Data sources
-#   - ACS: B08303	Travel Time To Work
-#   - 2000 Decennial Census:P031 Travel time to work for workers 16 years & over
-#   - 2019 urban area boundaries from tigris::urban_areas()
+#   - 2019 ACS: B08303	Travel Time To Work
+#   - 2000 Decennial Census: P031 Travel time to work for workers
+#       16 years & over
+#   - 2019 urban area boundaries (`tigris::urban_areas()`)
 
 # Functions ----------------------------
+
 clip_to_metro <- function(commute, metro) {
-  #' Clip the rows in the commute data to overlap with the metro area.
+  #' Keep only rows from commute that overlap with metro area by at least 2.5%
   #' @param commute sf dataframe with census tract rows, in web mercator
   #' @param metro sf dataframe with metropolitan area polygons, in web mercator
   #' @return sf dataframe with census that overlap the metro by at least 2.5%
@@ -30,32 +33,31 @@ clip_to_metro <- function(commute, metro) {
   plt <- ggplot() +
     geom_sf(data = commute, fill = "lightblue") +
     geom_sf(data = metro_union, fill = NA, color = "black")
-  ggsave("metro_initial.png", plot = plt, path = "final")
+  ggsave("metro_initial.png", plot = plt, path = output_path)
 
-  # get all tracts that intersect with metro area and
-  # calculate percentage area of census tract that overlaps with metro
   commute <- commute |>
+    # all tracts that intersect with metro area
     st_join(metro, join = st_intersects, left = FALSE) |>
-    # add tract area
+    # area of census tract
     mutate(tract_area = st_area(geometry)) |>
-    # add tract x metro overlap
+    # tract x metro overlap
     mutate(overlap_area = st_area(st_intersection(geometry, metro_union))) |>
     mutate(overlap_pct = overlap_area / tract_area)
 
   ggplot() +
     geom_sf(data = commute, aes(fill = as.numeric(overlap_pct)), color = NA) +
     scale_fill_viridis_c()
-  ggsave("metro_overlap_percent.png", path = "final")
+  ggsave("metro_overlap_percent.png", path = output_path)
 
   # 1st percentile is 2% overlap, 5th is 38%
-  # keep tracts that overlap at least 2.5% of their area
+  # keep census tracts with at least 2.5% overlap with metro area
   min_overlap <- 0.025
   commute <- commute |>
     filter(as.numeric(overlap_pct) > min_overlap)
   ggplot() +
     geom_sf(data = commute, aes(fill = as.numeric(overlap_pct)), color = NA) +
     scale_fill_viridis_c()
-  ggsave("metro_overlap_final.png", path = "final")
+  ggsave("metro_overlap_final.png", path = output_path)
 
   commute
 }
@@ -73,17 +75,16 @@ prep_data <- function(commute, metro) {
       mean_travel_time = as.numeric(.data$mean_travel_time)
     ) |>
     filter(!is.na(.data$mean_travel_time)) |>
-    # convert to web mercator for mapping
     st_transform(3857)
 
   commute <- clip_to_metro(commute, metro)
 
   # create commute time categories
   # from values in ACS variable B08303:
-  # (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 60, 90, Inf)
+  #   (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 60, 90, Inf)
   # from data
-  #  Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
-  # 10.00   26.78   30.11   30.09   33.45   57.90
+  #    Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+  #   10.00   26.78   30.11   30.09   33.45   57.90
   breaks <- c(0, 25, 30, 35, 45, 60)
   labels <- c(
     "Less than 25 minutes",
@@ -92,7 +93,7 @@ prep_data <- function(commute, metro) {
     "35 to 44 minutes",
     "45 minutes or more"
   )
-  commute <- commute |>
+  commute |>
     mutate(
       commute_category = cut(
         mean_travel_time,
@@ -119,11 +120,27 @@ get_limits <- function(sf_object) {
   list(xlim = xlim, ylim = ylim)
 }
 
-plot_data <- function(commute_data, common_scale, metro, year,
+load_cities <- function() {
+  #' Load major Bay Area cities for labeling on map
+  #' @return sf data frame with city points in Web Mercator
+  data.frame(
+    name = c(
+      "San Jose",
+      "San Francisco",
+      "Oakland",
+      "Fremont"
+    )
+  ) |>
+    geocode(name, method = "osm") |>
+    mutate(name = ifelse(name == "San Jose", "San José", name)) |>
+    st_as_sf(coords = c("long", "lat"), crs = 4326) |>
+    st_transform(3857)
+}
+
+plot_data <- function(commute_data, metro, cities, year,
                       draw_north = FALSE, draw_scale = FALSE) {
   #' Create a map for commute data
   #' @param commute_data sf data frame with mean_travel_time column
-  #' @param common_scale numeric vector with min, max values for color scale
   #' @param metro sf data frame with metro boundary, in Web Mercator
   #' @param year integer year for labeling
   #' @param draw_north logical whether to draw north arrow
@@ -134,18 +151,21 @@ plot_data <- function(commute_data, common_scale, metro, year,
   plt <- ggplot() +
     # base map
     annotation_map_tile(type = "cartolight", zoom = 11) +
+
     # commute data
     geom_sf(
       data = commute_data,
-      aes(fill = commute_category)
+      aes(fill = commute_category),
+      color = "#333333",
+      linewidth = 0.1,
     ) +
     scale_fill_brewer(
-      # palette = "YlGnBu",
       palette = "RdYlGn",
       direction = -1,
       na.value = "transparent",
     ) +
-    labs(fill = "Mean Commute Time\n(minutes)")
+    labs(fill = "Mean Commute Time")
+
   # draw year label in top right corner
   plt <- plt +
     annotate(
@@ -155,10 +175,11 @@ plot_data <- function(commute_data, common_scale, metro, year,
       label = year,
       hjust = 1.2,
       vjust = 1.2,
-      size = 4,
+      size = 8,
       fontface = "bold",
       color = "black"
     )
+
   if (draw_north) {
     plt <- plt +
       annotation_north_arrow(
@@ -168,6 +189,7 @@ plot_data <- function(commute_data, common_scale, metro, year,
         width = unit(0.6, "cm")
       )
   }
+
   if (draw_scale) {
     plt <- plt + annotation_scale(location = "br", height = unit(0.2, "cm"))
   }
@@ -178,10 +200,11 @@ plot_data <- function(commute_data, common_scale, metro, year,
       data = metro,
       aes(color = "2019 Urban\nArea Boundary"),
       fill = NA,
-      size = 0.5
+      size = 0.2,
+      linetype = "longdash"
     ) +
     scale_color_manual(
-      values = c("2019 Urban\nArea Boundary" = "black"),
+      values = c("2019 Urban\nArea Boundary" = "darkblue"),
       name = NULL
     ) +
     guides(
@@ -189,7 +212,16 @@ plot_data <- function(commute_data, common_scale, metro, year,
       color = guide_legend(order = 2)
     )
 
-  # set limits to metro area with some padding
+  # add cities
+  plt <- plt +
+    geom_sf(data = cities, size = 1, color = "#333333") +
+    geom_sf_text(
+      data = cities, aes(label = name),
+      color = "#333333",
+      nudge_y = 2000, fontface = "bold", size = 2.5
+    )
+
+  # set limits to metro area with padding
   limits <- get_limits(metro)
   plt <- plt + coord_sf(xlim = limits$xlim, ylim = limits$ylim) +
     theme_void() +
@@ -198,12 +230,13 @@ plot_data <- function(commute_data, common_scale, metro, year,
       legend.spacing.y = unit(15, "pt")
     )
 
+
   # write to file for debugging
   filename <- paste0("commute_", year, ".png")
   print(paste("writing", filename))
   ggsave(
     filename,
-    path = "final",
+    path = output_path,
     plot = plt,
     width = 10,
     height = 6
@@ -240,7 +273,7 @@ load_acs <- function(counties, metro, year) {
 }
 
 load_decennial <- function(counties, metro, year) {
-  #' Load 2000 datafrom SF3 transportation profile
+  #' Load 2000 data from SF3 transportation profile
   #' P033001 =
   #'   Aggregate travel time to work (in minutes)
   #'   by travel time to work
@@ -278,16 +311,8 @@ prep_metro <- function() {
   #' Load 2019 urban area boundaries for San Francisco and San Jose.
   #' This data is not currently available for years prior to 2011.
   #' @return sf data frame with metro boundary, in Web Mercator
-  ua <- urban_areas(year = 2019, cb = TRUE) |>
-    filter(grepl(", CA", NAME10))
-
-  # San Francisco--Oakland, CA
-  sf_ua <- ua |>
-    filter(NAME10 == "San Francisco--Oakland, CA")
-  # San Jose, CA
-  sj_ua <- ua |>
-    filter(NAME10 == "San Jose, CA")
-  rbind(sj_ua, sf_ua) |>
+  urban_areas(year = 2019, cb = TRUE) |>
+    filter(NAME10 %in% c("San Francisco--Oakland, CA", "San Jose, CA")) |>
     st_transform(3857)
 }
 
@@ -297,7 +322,7 @@ combine_plots <- function(plot_prev, plot_latest) {
   #' @param plot_latest ggplot object for latest year
   #' @return ggplot object
 
-  # add side by side plots
+  # side by side plots
   plots <- plot_grid(
     plot_prev +
       theme(legend.position = "none", plot.margin = margin(0, 6, 0, 0)),
@@ -336,22 +361,25 @@ combine_plots <- function(plot_prev, plot_latest) {
       plot.background = element_rect(fill = "white", color = NA),
     )
 
-  # arrange elements
   # add legend to the right of the plots
   plots_with_legend <- plot_grid(plots, legend, rel_widths = c(0.85, 0.15))
+
+  # single column with title, plots+legend, attribution
   final_map <- plot_grid(
     title, plots_with_legend, attribution,
     ncol = 1,
-    # rel_heights values control vertical title margins
     rel_heights = c(0.1, 1)
   )
   final_map <- ggdraw() +
     draw_plot(final_map) +
     theme(plot.background = element_rect(fill = "white", color = NA))
 
+
+  filename <- "commute_comparison.png"
+  print(paste("writing final map", filename))
   ggsave(
-    "commute_comparison.png",
-    path = "final",
+    filename,
+    path = output_path,
     plot = final_map,
     width = 12,
     height = 9
@@ -360,6 +388,7 @@ combine_plots <- function(plot_prev, plot_latest) {
 }
 
 # Script  ----------------------------
+
 bay_counties <- c(
   "Alameda", "Contra Costa", "Marin", "Napa", "San Francisco",
   "San Mateo", "Santa Clara", "Solano", "Sonoma"
@@ -367,33 +396,25 @@ bay_counties <- c(
 year_latest <- 2019
 year_prev <- 2000
 
-# metro <- prep_metro()
-mean_commute_latest <- load_acs(counties, metro, year_latest)
-mean_commute_prev <- load_decennial(counties, metro, year_prev)
+cities <- load_cities()
+metro <- prep_metro()
+mean_commute_latest <- load_acs(bay_counties, metro, year_latest)
+mean_commute_prev <- load_decennial(bay_counties, metro, year_prev)
 
-# common scale so colors will have the same meaning on both plots
-common_scale <- range(
-  c(
-    mean_commute_prev$mean_travel_time,
-    mean_commute_latest$mean_travel_time
-  ),
-  na.rm = TRUE
-)
-
-# create plots; draw single north arrow and scale
 plot_prev <- plot_data(
   mean_commute_prev,
-  common_scale,
   metro,
+  cities,
   year_prev,
   draw_north = TRUE
 )
 plot_latest <- plot_data(
   mean_commute_latest,
-  common_scale,
   metro,
+  cities,
   year_latest,
   draw_scale = TRUE
 )
 
-combine_plots(plot_prev, plot_latest)
+final_map <- combine_plots(plot_prev, plot_latest)
+final_map
